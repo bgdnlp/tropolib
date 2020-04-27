@@ -1,0 +1,11 @@
+.DS_store
+
+.vscode/
+[._]sw[a-p]
+*~
+env/
+.env/
+
+__pycache__/
+
+*gitignored*
