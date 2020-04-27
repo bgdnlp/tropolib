@@ -105,3 +105,6 @@ def multiaz_subnets(
                 )
             )
     return resources
+
+if __name__ == "__main__":
+    pass
