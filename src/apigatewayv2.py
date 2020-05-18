@@ -18,7 +18,16 @@ class HttpApi:
             self.t_api.Description = description
         self.resources[self.t_api.title] = self.t_api
 
-    def add_stage(self, name: str, auto_deploy: bool = False, log_format: str = "none"):
+    def add_stage(
+        self,
+        name: str,
+        auto_deploy: bool = False,
+        log_format: str = "none",
+        stage_variables: dict = {},
+        description: str = None,
+    ):
+        # TODO:
+        #   - DefaultRouteSettings (??)
         if log_format.lower() in ["none", "clf", "json", "xml", "csv"]:
             pass
         elif "$context.requestId" in log_format:
@@ -64,8 +73,12 @@ class HttpApi:
                 api_stage_log.Format = '<request id="$context.requestId"> <ip>$context.identity.sourceIp</ip> <requestTime>$context.requestTime</requestTime> <httpMethod>$context.httpMethod</httpMethod> <routeKey>$context.routeKey</routeKey> <status>$context.status</status> <protocol>$context.protocol</protocol> <responseLength>$context.responseLength</responseLength> </request>'  # noqa: E501
             elif log_format.lower() == "csv":
                 api_stage_log.Format = "$context.identity.sourceIp,$context.requestTime,$context.httpMethod,$context.routeKey,$context.protocol,$context.status,$context.responseLength,$context.requestId"  # noqa: E501
-
         api_stage.AutoDeploy = auto_deploy
+        if description is not None:
+            api_stage.Description = description
+        if len(stage_variables) > 0:
+            api_stage.StageVariables = stage_variables
+        self.resources[api_stage.title] = api_stage
 
     def add_route(
         self,
