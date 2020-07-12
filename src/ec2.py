@@ -33,6 +33,13 @@ def multiaz_subnets(
     Returns a list of Troposphere resources that describes the subnets
     and can be attached to a Template object.
 
+    Returned subnet objects have the following keys set in their
+    Metadata attribute:
+        az: full availability zone name ("eu-west-1a")
+        az_index: uppercase AZ, without the region part ("A")
+        suffix: the suffix that was added to the name to form a unique
+            resource title. Probably a single digit.
+
     Args:
         name_prefix (str): Prefix each resource with this string. Use to
             assure unique name for the resource in the calling Template
@@ -58,6 +65,7 @@ def multiaz_subnets(
 
     Returns:
         list: Troposphere resources to be added to Template.
+
     """
     if vpc is None and vpc_id is None:
         raise ValueError("One of vpc or vpc_id must be specified")
@@ -75,8 +83,12 @@ def multiaz_subnets(
             AvailabilityZone=net_segment["az"],
             CidrBlock=net_segment["cidr"],
             VpcId=vpc_id,
-            Tags=[{"Key": "Name", "Value": f"{name_prefix} {index+1}({az_index})",}],
+            Tags=[{"Key": "Name", "Value": f"{name_prefix} {az_index}"}],
         )
+        subnet.Metadata = {}
+        subnet.Metadata["az"] = net_segment["az"].lower()
+        subnet.Metadata["az_index"] = az_index
+        subnet.Metadata["suffix"] = index + 1
         resources.append(subnet)
         # associate network ACL with subnet
         if network_acl_id is None and network_acl is not None:
