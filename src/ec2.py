@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from troposphere import Template, Ref, GetAtt, Export, Sub
+from troposphere import Template, Ref, GetAtt, Export, Output, Sub
 from troposphere import ec2 as t_ec2
 from pawslib.ec2 import split_net_across_zones
 from pawslib.var import alphanum
@@ -167,7 +167,7 @@ class VpcTemplate:
             Tags=[{"Key": "Name", "Value": self.name}],
         )
         self.vpc = self._r["Vpc"]
-        self._o["VpcId"] = t_ec2.add_output(
+        self._o["VpcId"] = Output(
             title="VpcId",
             Value=Ref(self.vpc),
             Export=Export(Sub("${AWS::StackName}-vpc-id")),
