@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from troposphere import Ref
+from troposphere import Template, Ref, GetAtt, Export, Sub
 from troposphere import ec2 as t_ec2
 from pawslib.ec2 import split_net_across_zones
 from pawslib.var import alphanum
@@ -112,6 +112,386 @@ def multiaz_subnets(
                 )
             )
     return resources
+
+
+class VpcTemplate:
+    """Generate a CloudFormation Template that creates a VPC
+
+    It can create the VPC, connect it to the internet via an internet
+    gateway, set up NAT gateways and public and private subnets with the
+    corresponding route tables and network ACLs.
+
+    Exports:
+        - VPC ID: stackname-vpc-id
+    """
+
+    def __init__(
+        self,
+        region: str,
+        cidr_block: str,
+        name: str = "VPC",
+        internet_access_enabled: bool = True,
+        internal_networks: list = [],
+    ):
+        """Create VPC, internet gateway, route tables and network ACLs
+
+        Args:
+            region (str): Region to use when setting up the VPC. The
+                maximum number of subnets set up depends on the number
+                of availability zones present in the region.
+            cidr_block (str): IP range used by the VPC
+            name (str, optional): VPC name. Defaults to "VPC".
+            internet_access_enabled (bool, optional): If False, internet
+                gateway will not be set up. Public network ACLs and
+                route tables will still be created.
+                Defaults to True.
+            internal_networks (list, optional): IP ranges for private
+                networks that this VPC will be connected to. They will
+                be added to network ACLs. Defaults to [].
+        """
+        self.name = name
+        self.region = region
+        self.cidr_block = cidr_block
+        self.internal_networks = internal_networks
+        self.internet_access_enabled = internet_access_enabled
+        self.nat_gateways = []
+        self.natted_route_tables = []
+        self._t = Template()  # Template
+        self._r = dict()  # Resources
+        self._o = dict()  # Outputs
+        self._r["Vpc"] = t_ec2.VPC(
+            title=f"{self.name}Vpc",
+            CidrBlock=self.cidr_block,
+            EnableDnsHostnames=True,
+            EnableDnsSupport=True,
+            Tags=[{"Key": "Name", "Value": self.name}],
+        )
+        self.vpc = self._r["Vpc"]
+        self._o["VpcId"] = t_ec2.add_output(
+            title="VpcId",
+            Value=Ref(self.vpc),
+            Export=Export(Sub("${AWS::StackName}-vpc-id")),
+        )
+        if internet_access_enabled:
+            # Create Internet Gateway
+            title = "Igw"
+            self._r[title] = t_ec2.InternetGateway(
+                title=title, Tags=[{"Key": "Name", "Value": f"{self.name}-igw"}],
+            )
+            self._r["igw_attachment"] = t_ec2.VPCGatewayAttachment(
+                title="IgwAttachment",
+                VpcId=Ref(self.vpc),
+                InternetGatewayId=Ref(self._r["Igw"]),
+            )
+        # Public routing table
+        self._r["PubRouteTable"] = t_ec2.RouteTable(
+            title="PubRouteTable",
+            VpcId=Ref(self.vpc),
+            Tags=[{"Key": "Name", "Value": "Public"}],
+        )
+        self.public_route_table = self._r["PubRouteTable"]
+        if internet_access_enabled:
+            self._r["pub_rtt_rt_pub"] = t_ec2.Route(
+                title="PubRoute",
+                RouteTableId=Ref(self._r["PubRouteTable"]),
+                DestinationCidrBlock="0.0.0.0/0",
+                GatewayId=Ref(self._r["Igw"]),
+            )
+        # Network ACL for public subnets
+        self._r["PubNacl"] = t_ec2.NetworkAcl(
+            title="PubNacl",
+            VpcId=Ref(self.vpc),
+            Tags=[{"Key": "Name", "Value": "Public"}],
+        )
+        self.public_nacl = self._r["PubNacl"]
+        self._r["pub_nacl_out_all"] = t_ec2.NetworkAclEntry(
+            title="PubNaclOutAll",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=True,
+            RuleNumber=500,
+            CidrBlock="0.0.0.0/0",
+            Protocol=-1,
+            RuleAction="allow",
+        )
+        self._r["pub_nacl_in_icmp"] = t_ec2.NetworkAclEntry(
+            title="PubNaclInIcmp",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=False,
+            RuleNumber=99,
+            CidrBlock="0.0.0.0/0",
+            Protocol=1,
+            Icmp=t_ec2.ICMP(Code=-1, Type=-1),
+            RuleAction="allow",
+        )
+        self._r["pub_nacl_in_vpc"] = t_ec2.NetworkAclEntry(
+            title="PubNaclInVpc",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=False,
+            RuleNumber=100,
+            CidrBlock=GetAtt(self.vpc, "CidrBlock"),
+            Protocol=-1,
+            RuleAction="allow",
+        )
+        for index, cidr_block in enumerate(self.internal_networks):
+            self._r[f"pub_nacl_in_internal_{index}"] = t_ec2.NetworkAclEntry(
+                title=f"PubNaclInInternal{index}",
+                NetworkAclId=Ref(self.public_nacl),
+                Egress=False,
+                RuleNumber=101 + index,
+                CidrBlock=cidr_block,
+                Protocol=-1,
+                RuleAction="allow",
+            )
+        self._r["pub_nacl_in_ssh"] = t_ec2.NetworkAclEntry(
+            title="PubNaclInSsh",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=False,
+            RuleNumber=210,
+            CidrBlock="0.0.0.0/0",
+            Protocol=6,
+            PortRange=t_ec2.PortRange(From=22, To=22),
+            RuleAction="allow",
+        )
+        self._r["pub_nacl_in_http"] = t_ec2.NetworkAclEntry(
+            title="PubNaclInHttp",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=False,
+            RuleNumber=220,
+            CidrBlock="0.0.0.0/0",
+            Protocol=6,
+            PortRange=t_ec2.PortRange(From=80, To=80),
+            RuleAction="allow",
+        )
+        self._r["pub_nacl_in_https"] = t_ec2.NetworkAclEntry(
+            title="PubNaclInHttps",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=False,
+            RuleNumber=221,
+            CidrBlock="0.0.0.0/0",
+            Protocol=6,
+            PortRange=t_ec2.PortRange(From=443, To=443),
+            RuleAction="allow",
+        )
+        self._r["pub_nacl_in_nat_tcp"] = t_ec2.NetworkAclEntry(
+            title="PubNaclInNatTcp",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=False,
+            RuleNumber=500,
+            CidrBlock="0.0.0.0/0",
+            Protocol=6,
+            PortRange=t_ec2.PortRange(From=1024, To=65535),
+            RuleAction="allow",
+        )
+        self._r["pub_nacl_in_nat_udp"] = t_ec2.NetworkAclEntry(
+            title="PubNaclInNatUdp",
+            NetworkAclId=Ref(self.public_nacl),
+            Egress=False,
+            RuleNumber=501,
+            CidrBlock="0.0.0.0/0",
+            Protocol=17,
+            PortRange=t_ec2.PortRange(From=1024, To=65535),
+            RuleAction="allow",
+        )
+        # Network ACL for private subnets
+        self._r["InternalNacl"] = t_ec2.NetworkAcl(
+            title="InternalNacl",
+            VpcId=Ref(self.vpc),
+            Tags=[{"Key": "Name", "Value": "Private"}],
+        )
+        self.internal_nacl = self._r["InternalNacl"]
+        self._r["internal_nacl_out_all"] = t_ec2.NetworkAclEntry(
+            title="InternalNaclOutAll",
+            NetworkAclId=Ref(self.internal_nacl),
+            Egress=True,
+            RuleNumber=500,
+            CidrBlock="0.0.0.0/0",
+            Protocol=-1,
+            RuleAction="allow",
+        )
+        self._r["internal_nacl_in_icmp"] = t_ec2.NetworkAclEntry(
+            title="InternalNaclInIcmp",
+            NetworkAclId=Ref(self.internal_nacl),
+            Egress=False,
+            RuleNumber=99,
+            CidrBlock="0.0.0.0/0",
+            Protocol=1,
+            Icmp=t_ec2.ICMP(Code=-1, Type=-1),
+            RuleAction="allow",
+        )
+        self._r["internal_nacl_in_vpc"] = t_ec2.NetworkAclEntry(
+            title="InternalNaclInVpc",
+            NetworkAclId=Ref(self.internal_nacl),
+            Egress=False,
+            RuleNumber=100,
+            CidrBlock=GetAtt(self.vpc, "CidrBlock"),
+            Protocol=-1,
+            RuleAction="allow",
+        )
+        for index, cidr_block in enumerate(self.internal_networks):
+            self._r[f"internal_nacl_in_internal_{index}"] = t_ec2.NetworkAclEntry(
+                title=f"InternalNaclInInternal{index}",
+                NetworkAclId=Ref(self.internal_nacl),
+                Egress=False,
+                RuleNumber=101 + index,
+                CidrBlock=cidr_block,
+                Protocol=-1,
+                RuleAction="allow",
+            )
+        self._r["internal_nacl_in_nat_tcp"] = t_ec2.NetworkAclEntry(
+            title="InternalNaclInNatTcp",
+            NetworkAclId=Ref(self.internal_nacl),
+            Egress=False,
+            RuleNumber=500,
+            CidrBlock="0.0.0.0/0",
+            Protocol=6,
+            PortRange=t_ec2.PortRange(From=1024, To=65535),
+            RuleAction="allow",
+        )
+        self._r["internal_nacl_in_nat_udp"] = t_ec2.NetworkAclEntry(
+            title="InternalNaclInNatUdp",
+            NetworkAclId=Ref(self.internal_nacl),
+            Egress=False,
+            RuleNumber=501,
+            CidrBlock="0.0.0.0/0",
+            Protocol=17,
+            PortRange=t_ec2.PortRange(From=1024, To=65535),
+            RuleAction="allow",
+        )
+
+    def add_public_subnet_group(
+        self,
+        name_prefix: str,
+        cidr_block: str,
+        no_of_subnets: int = 4,
+        create_nat_gateways: bool = False,
+    ):
+        """Create public subnets and, optionally, NAT Gateways
+
+        Args:
+            name_prefix (str): Subnet name. AZ will be added at the end.
+            cidr_block (str): Range of IP addresses to be split over
+                availability zones.
+            no_of_subnets (int, optional): How many subnets to set up.
+                Defaults to 4.
+            create_nat_gateways (bool, optional): If True, it will
+                create one NAT gateway in each subnet and a private
+                route table for each. Defaults to False.
+        """
+        for res in multiaz_subnets(
+            name_prefix=name_prefix,
+            cidr_block=cidr_block,
+            region=self.region,
+            no_of_subnets=no_of_subnets,
+            vpc=self.vpc,
+            network_acl=self.public_nacl,
+            route_table=self.public_route_table,
+        ):
+            self._r[res.title] = res
+            if create_nat_gateways and res.resource["Type"] == "AWS::EC2::Subnet":
+                subnet = res
+                az = subnet.Metadata["az"]
+                az_index = subnet.Metadata["az_index"]
+                suffix = subnet.Metadata["suffix"]
+                # Elastic IP for NAT Gateway
+                eip = t_ec2.EIP(title=f"EipNatGw{suffix}", Domain="vpc")
+                self._r[eip.title] = eip
+                # NAT Gateway
+                nat_gw = t_ec2.NatGateway(
+                    title=f"NatGw{suffix}",
+                    AllocationId=GetAtt(eip, "AllocationId"),
+                    SubnetId=Ref(subnet),
+                    Tags=[{"Key": "Name", "Value": f"Nat Gw {az_index}"}],
+                    Metadata={"az": az, "az_index": az_index, "suffix": suffix},
+                )
+                self._r[nat_gw.title] = nat_gw
+                self.nat_gateways.append(nat_gw)
+                # Natted route table
+                route_table = t_ec2.RouteTable(
+                    title=f"PrivRouteTable{suffix}",
+                    VpcId=Ref(self.vpc),
+                    Tags=[{"Key": "Name", "Value": f"Private {az_index}"}],
+                    Metadata={"az": az, "az_index": az_index, "suffix": suffix},
+                )
+                self.natted_route_tables.append(route_table)
+                # NAT route
+                self._r[route_table.title] = route_table
+                route = t_ec2.Route(
+                    title=f"NatRoute{az_index.upper()}",
+                    RouteTableId=Ref(route_table),
+                    DestinationCidrBlock="0.0.0.0/0",
+                    NatGatewayId=Ref(nat_gw),
+                )
+                self._r[route.title] = route
+
+    def add_natted_subnet_group(
+        self, cidr_block: str, name_prefix: str, no_of_subnets: int = 4
+    ):
+        """Create private subnets behind NAT gateways
+
+        Creates a group of subnets, attaches the private network ACL and
+        the corresponding private route table depending on AZ
+
+        Args:
+            cidr_block (str): Will be split across AZs
+            name_prefix (str): Subnet name. AZ will be added at the end.
+            no_of_subnets (int, optional): How many subnets to set up.
+                Must be a power of 2. Defaults to 4.
+
+        Raises:
+            NotImplementedError: [description]
+        """
+        for res in multiaz_subnets(
+            name_prefix=name_prefix,
+            cidr_block=cidr_block,
+            region=self.region,
+            vpc=self.vpc,
+            network_acl=self.internal_nacl,
+        ):
+            self._r[res.title] = res
+            if res.resource["Type"] == "AWS::EC2::Subnet":
+                subnet = res
+                route_found = False
+                for route_table in self.natted_route_tables:
+                    if route_table.Metadata["az"] == subnet.Metadata["az"]:
+                        self._r[
+                            f"{subnet.title}RouteAssociation"
+                        ] = t_ec2.SubnetRouteTableAssociation(
+                            title=f"{subnet.title}RouteAssociation",
+                            SubnetId=Ref(subnet),
+                            RouteTableId=Ref(route_table),
+                        )
+                        route_found = True
+                        break
+                if not route_found:
+                    raise NotImplementedError(
+                        f"Can't find NAT gateway in {subnet.Metadata['az']}"
+                    )
+
+    def add_subnet_group(
+        self,
+        name_prefix: str,
+        cidr_block: str,
+        vpc: object = None,
+        no_of_subnets: int = 4,
+        network_acl: object = None,
+        route_table: object = None,
+    ):
+        for res in multiaz_subnets(
+            name_prefix=name_prefix,
+            cidr_block=cidr_block,
+            region=self.region,
+            vpc=self.vpc,
+            network_acl=network_acl,
+            route_table=route_table,
+        ):
+            self._r[res.title] = res
+
+    def generate(self):
+        for key, resource in self._r.items():
+            self._t.add_resource(resource)
+        for key, output in self._o.items():
+            self._t.add_output(output)
+        return self._t.to_yaml()
 
 
 if __name__ == "__main__":
