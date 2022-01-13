@@ -486,6 +486,89 @@ class VpcTemplate:
         ):
             self._r[res.title] = res
 
+    def peer_with_another_vpc(
+        self,
+        peer_vpc_id: str,
+        peer_vpc_name: str,
+        peer_role_arn: str = None,
+        peer_owner_id: str = None,
+        peer_region: str = None,
+        peer_cidrs: list = [],
+        add_route_to_private_tables: bool = True,
+        add_route_to_public_table: bool = True,
+    ):
+        """Set VPC Peering
+
+        Args:
+            peer_vpc_id (str): The ID of the VPC with which you are
+                creating the VPC peering connection
+            peer_vpc_name (str): A name for the peer VPC, used in
+                the Name tag for the peering connection
+            peer_role_arn (str, optional): VPC peer role for the
+                peering connection in another AWS account.
+                Required if peering with a different AWS account.
+                Defaults to None.
+            peer_owner_id (str, optional): Owner of the other AWS
+                account, if any.
+                Defaults to None.
+            peer_region (str, optional): The Region code for the
+                accepter VPC. Defaults to the same region as requester
+                VPC.
+            peer_cidrs: (list, optional): List of CIDR blocks used
+                by the peer VPC. If non-empty and any add_route_*
+                argument is set to true, a route entry will be added
+                to the respective table pointing that CIDR block to
+                the peered connection.
+                Defaults to an empty list.
+            add_route_to_private_tables (bool,optional): If True,
+                add the peered VPC to the private routing tables.
+                Defaults to True.
+            add_route_to_public_tables (bool,optional): If True,
+                add the peered VPC to the public routing table.
+                Defaults to True.
+
+        Notes:
+          - For the peered VPC to be added to the routing tables,
+            they must already exist when this method is called. That
+            means subnets should be created before setting up
+            VPC Connection Peering.
+          - As of Jan 2022 CloudFormation can't enable DNS resolution
+        """
+        res = t_ec2.VPCPeeringConnection(
+            title=alphanum(f"Peer{peer_vpc_name}With{self.name}"),
+            VpcId=Ref(self.vpc),
+            PeerVpcId=peer_vpc_id,
+            Tags=[{"Key": "Name", "Value": f"{peer_vpc_name} - {self.name}"}],
+        )
+        if peer_region is not None:
+            res.PeerRegion = peer_region
+        if peer_owner_id is not None:
+            res.PeerOwnerId = peer_owner_id
+        if peer_role_arn is not None:
+            res.PeerRoleArn = peer_role_arn
+        self._r[res.title] = res
+        if add_route_to_private_tables:
+            for cidr in peer_cidrs:
+                for route_table in self.natted_route_tables:
+                    route_title = f"{route_table.title}Peer{alphanum(cidr)}Route"
+                    self._r[route_title] = t_ec2.Route(
+                        title=route_title,
+                        RouteTableId=Ref(route_table),
+                        DestinationCidrBlock=cidr,
+                        VpcPeeringConnectionId=Ref(res),
+                    )
+        if add_route_to_public_table:
+            for cidr in peer_cidrs:
+                route_title = (
+                    f"{self.public_route_table.title}Peer{alphanum(cidr)}Route"
+                )
+                self._r[route_title] = t_ec2.Route(
+                    title=route_title,
+                    RouteTableId=Ref(self.public_route_table),
+                    DestinationCidrBlock=cidr,
+                    VpcPeeringConnectionId=Ref(res),
+                )
+
     def generate(self):
         for key, resource in self._r.items():
             self._t.add_resource(resource)
