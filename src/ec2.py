@@ -176,7 +176,8 @@ class VpcTemplate:
             # Create Internet Gateway
             title = "Igw"
             self._r[title] = t_ec2.InternetGateway(
-                title=title, Tags=[{"Key": "Name", "Value": f"{self.name}-igw"}],
+                title=title,
+                Tags=[{"Key": "Name", "Value": f"{self.name}-igw"}],
             )
             self._r["igw_attachment"] = t_ec2.VPCGatewayAttachment(
                 title="IgwAttachment",
@@ -568,6 +569,17 @@ class VpcTemplate:
                     DestinationCidrBlock=cidr,
                     VpcPeeringConnectionId=Ref(res),
                 )
+
+    def set_s3_endpoint(self):
+        """Set an S3 endpoint with full access and add it to private routes"""
+        res = t_ec2.VPCEndpoint(
+            title=alphanum(f"{self.name}S3EndpointGateway"),
+            VpcId=Ref(self.vpc),
+            ServiceName=f"com.amazonaws.{self.region}.s3",
+            RouteTableIds=[
+                Ref(route_table) for route_table in self.natted_route_tables
+            ],
+        )
 
     def generate(self):
         for key, resource in self._r.items():
