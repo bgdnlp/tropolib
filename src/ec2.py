@@ -536,7 +536,9 @@ class VpcTemplate:
           - As of Jan 2022 CloudFormation can't enable DNS resolution
         """
         res = t_ec2.VPCPeeringConnection(
-            title=alphanum(f"Peer{peer_vpc_name}With{self.name}"),
+            title=alphanum(
+                f"Peer{peer_vpc_name.capitalize()}With{self.name.capitalize()}"
+            ),
             VpcId=Ref(self.vpc),
             PeerVpcId=peer_vpc_id,
             Tags=[{"Key": "Name", "Value": f"{peer_vpc_name} - {self.name}"}],
