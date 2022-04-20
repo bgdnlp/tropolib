@@ -154,8 +154,13 @@ class VpcTemplate:
         self.cidr_block = cidr_block
         self.internal_networks = internal_networks
         self.internet_access_enabled = internet_access_enabled
-        self.nat_gateways = []
+        self.public_subnets = []
+        # Gateway subnets are public subnets hosting exit points like
+        # NAT Gateway and VPC Endpoint interfaces
+        self.gateway_subnets = []
+        self.public_route_table = None
         self.natted_route_tables = []
+        self.nat_gateways = []
         self._t = Template()  # Template
         self._r = dict()  # Resources
         self._o = dict()  # Outputs
@@ -388,6 +393,7 @@ class VpcTemplate:
             route_table=self.public_route_table,
         ):
             self._r[res.title] = res
+            self.public_subnets.append(res)
             if create_nat_gateways and res.resource["Type"] == "AWS::EC2::Subnet":
                 subnet = res
                 az = subnet.Metadata["az"]
@@ -413,6 +419,7 @@ class VpcTemplate:
                     Tags=[{"Key": "Name", "Value": f"Private {az_index}"}],
                     Metadata={"az": az, "az_index": az_index, "suffix": suffix},
                 )
+                self.gateway_subnets.append(subnet)
                 self.natted_route_tables.append(route_table)
                 # NAT route
                 self._r[route_table.title] = route_table
@@ -582,6 +589,31 @@ class VpcTemplate:
                 Ref(route_table) for route_table in self.natted_route_tables
             ],
         )
+        if self.public_route_table is not None:
+            res.RouteTableIds.append(Ref(self.public_route_table))
+        self._r[res.title] = res
+
+    def set_prometheus_endpoint(self):
+        """Set a Managed Prometheus endpoint with full access and add it to private routes"""
+        sg_res = t_ec2.SecurityGroup(
+            title=alphanum(f"{self.name}ApsVpcEndpointSG"),
+            GroupDescription="Used by Prometheus VPC Endpoint",
+            SecurityGroupIngress=[
+                t_ec2.SecurityGroupRule(
+                    IpProtocol="tcp", FromPort="443", ToPort="443", CidrIp="0.0.0.0/0"
+                )
+            ],
+        )
+        self._r[sg_res.title] = sg_res
+        res = t_ec2.VPCEndpoint(
+            title=alphanum(f"{self.name}ApsVpcEndpoint"),
+            VpcId=Ref(self.vpc),
+            ServiceName=f"com.amazonaws.{self.region}.aps-workspaces",
+            SubnetIds=[Ref(subnet) for subnet in self.gateway_subnets],
+            SecurityGroupIds=[Ref(self._r[sg_res.title])],
+            VpcEndpointType="Interface",
+        )
+        self._r[res.title] = res
 
     def generate(self):
         for key, resource in self._r.items():
