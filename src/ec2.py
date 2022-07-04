@@ -601,6 +601,7 @@ class VpcTemplate:
         """
         sg_res = t_ec2.SecurityGroup(
             title=alphanum(f"{self.name}ApsVpcEndpointSG"),
+            VpcId=Ref(self.vpc),
             GroupDescription="Used by Prometheus VPC Endpoint",
             SecurityGroupIngress=[
                 t_ec2.SecurityGroupRule(
