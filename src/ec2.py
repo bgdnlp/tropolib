@@ -452,6 +452,7 @@ class VpcTemplate:
             name_prefix=name_prefix,
             cidr_block=cidr_block,
             region=self.region,
+            no_of_subnets=no_of_subnets,
             vpc=self.vpc,
             network_acl=self.internal_nacl,
         ):
@@ -594,7 +595,10 @@ class VpcTemplate:
         self._r[res.title] = res
 
     def set_prometheus_endpoint(self):
-        """Set a Managed Prometheus endpoint with full access and add it to private routes"""
+        """
+        Set a Managed Prometheus endpoint with full access and add it to
+        private routes
+        """
         sg_res = t_ec2.SecurityGroup(
             title=alphanum(f"{self.name}ApsVpcEndpointSG"),
             GroupDescription="Used by Prometheus VPC Endpoint",
