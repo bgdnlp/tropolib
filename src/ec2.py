@@ -559,26 +559,42 @@ class VpcTemplate:
             res.PeerRoleArn = peer_role_arn
         self._r[res.title] = res
         if add_route_to_private_tables:
-            for cidr in peer_cidrs:
-                for route_table in self.natted_route_tables:
-                    route_title = f"{route_table.title}Peer{alphanum(cidr)}Route"
-                    self._r[route_title] = t_ec2.Route(
-                        title=route_title,
-                        RouteTableId=Ref(route_table),
-                        DestinationCidrBlock=cidr,
-                        VpcPeeringConnectionId=Ref(res),
-                    )
+            self.add_vpc_peering_to_private_tables(
+                peer_cidrs=peer_cidrs, vpc_peering_id=Ref(res)
+            )
         if add_route_to_public_table:
-            for cidr in peer_cidrs:
-                route_title = (
-                    f"{self.public_route_table.title}Peer{alphanum(cidr)}Route"
-                )
+            self.add_vpc_peering_to_public_table(
+                peer_cidrs=peer_cidrs, vpc_peering_id=Ref(res)
+            )
+
+    def add_vpc_peering_to_private_tables(
+        self,
+        peer_cidrs: list = [],
+        vpc_peering_id: str = None,
+    ):
+        for cidr in peer_cidrs:
+            for route_table in self.natted_route_tables:
+                route_title = f"{route_table.title}Peer{alphanum(cidr)}Route"
                 self._r[route_title] = t_ec2.Route(
                     title=route_title,
-                    RouteTableId=Ref(self.public_route_table),
+                    RouteTableId=Ref(route_table),
                     DestinationCidrBlock=cidr,
-                    VpcPeeringConnectionId=Ref(res),
+                    VpcPeeringConnectionId=vpc_peering_id,
                 )
+
+    def add_vpc_peering_to_public_table(
+        self,
+        peer_cidrs: list = [],
+        vpc_peering_id: str = None,
+    ):
+        for cidr in peer_cidrs:
+            route_title = f"{self.public_route_table.title}Peer{alphanum(cidr)}Route"
+            self._r[route_title] = t_ec2.Route(
+                title=route_title,
+                RouteTableId=Ref(self.public_route_table),
+                DestinationCidrBlock=cidr,
+                VpcPeeringConnectionId=vpc_peering_id,
+            )
 
     def set_s3_endpoint(self):
         """Set an S3 endpoint with full access and add it to private routes"""
